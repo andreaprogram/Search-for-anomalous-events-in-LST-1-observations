@@ -284,7 +284,7 @@ def main():
         # PER FILTER GROUP---------------------------------------------------------------
         # for each filter (subgroup) store the checks and relevant parameters
         
-        filters = [1, 2]  # in case we want to enlarge this list in the future
+        filters = [1, 2]  # in case we want to enlarge this list in the future-- test
         sigma_cutoffs = {1: sigma_cutoff_1, 2: sigma_cutoff_2}
     
         class CheckResult(tables.IsDescription):
