@@ -7,7 +7,6 @@ import tables
 import numpy as np
 import statsmodels.api as sm
 
-# let's test this way
 
 # INSERTING THE PATH OF THE DATACHECK FILE TO WORK WITH---------------------------------------------------------------------------------------------------------
 
@@ -95,6 +94,92 @@ valid        : list length y.shape[1]
 """
 
 
+# FILTERS FUNCTIONS
+"""
+sigma : uncertainty associated with the input data (Poisson's, stdev,...)
+z_scores : # of sigmas by which a point in the data deviates from the linear fit
+sigma_cutoff : # of sigmas by which we determine a zscore as anomalous
+
+"""
+def f1(subruns, event_rate, event_rate_sigma, sigma_cutoff):
+
+    event_rate_robfit = robust_fitt(subruns, event_rate.reshape(-1, 1))
+
+    if not event_rate_robfit["valid"][0]:
+        return {
+            "valid": False,
+            "checks": np.array([], dtype=np.int64),
+            "z_score": np.array([], dtype=np.float64),
+            "slope": np.nan,
+            "u_slope": np.nan,
+            "intercept": np.nan,
+            "u_intercept": np.nan,
+        }
+
+    else:
+        event_rate_fit = event_rate_robfit["fit"].flatten()
+
+        erate_z_score = np.abs(event_rate - event_rate_fit) / event_rate_sigma
+
+        mask = erate_z_score > sigma_cutoff
+
+        return {
+            "valid": True,
+            "checks": subruns[mask],
+            "z_score": erate_z_score[mask],
+            "slope": event_rate_robfit["slope"][0],
+            "u_slope": event_rate_robfit["u_slope"][0],
+            "intercept": event_rate_robfit["intercept"][0],
+            "u_intercept": event_rate_robfit["u_intercept"][0],
+        }
+    
+
+
+def f2(subruns, cdf, sigma_cutoff):
+    n_subruns = len(subruns)
+    D = np.zeros(n_subruns)
+
+    for s in range(n_subruns - 1):
+        D[s] = np.max(np.abs(cdf[s] - cdf[s + 1]))
+
+    # Robust fit
+    D_robust_fit = robust_fitt(subruns, D.reshape(-1, 1))
+
+    if not D_robust_fit["valid"][0]:
+        return {
+            "valid": False,
+            "checks": np.array([], dtype=np.int64),
+            "z_score": np.array([], dtype=np.float64),
+            "slope": np.nan,
+            "u_slope": np.nan,
+            "intercept": np.nan,
+            "u_intercept": np.nan,
+        }
+
+    else:
+        # This is not a Poisson process therefore we cannot treat it as such
+        D_good = D_robust_fit["good_points"][0][1]
+        D_fit = D_robust_fit["fit"].flatten()
+
+        good_mask = D_robust_fit["good_mask"][0]
+        D_fit_good = D_fit[good_mask]
+
+        sigma = np.std(D_good - D_fit_good)
+
+        deviations = np.abs(D - D_fit) / sigma
+
+        mask = deviations > sigma_cutoff
+
+        return {
+            "valid": True,
+            "checks": subruns[mask],
+            "z_score": deviations[mask],
+            "slope": D_robust_fit["slope"][0],
+            "u_slope": D_robust_fit["u_slope"][0],
+            "intercept": D_robust_fit["intercept"][0],
+            "u_intercept": D_robust_fit["u_intercept"][0],
+        }
+
 
 def main():
     args = parser.parse_args()  #read arguments
@@ -121,26 +206,9 @@ def main():
                 continue
 
 # FILTERS TO DETECT ANOMALIES-----------------------------------------------------------------------------------------------------------------------------------
-        dictionary = {
-            "checks": [],
-            "slope_1": None,
-            "u_slope_1": None,
-            "intercept_1": None,
-            "u_intercept_1": None,
-            "checks_1": None,
-            "z_score_1": None,
-            "slope_2": None,
-            "u_slope_2": None,
-            "intercept_2": None,
-            "u_intercept_2": None,
-            "checks_2": None,
-            "z_score_2": None,
-        }
-        
-        
+        dictionary = {}
         # USEFUL VARIABLES
         subruns = a.root.dl1datacheck.cosmics.col('subrun_index')[:-1] #0,1,...,57 number of subruns in this run
-        n_subruns = len(subruns)
         time = a.root.dl1datacheck.cosmics.col('elapsed_time')[:-1] 
         
         
@@ -148,43 +216,27 @@ def main():
         num_events = a.root.dl1datacheck.cosmics.col('num_events')[:-1]  # events in each subrun
         event_rate = num_events / time
         event_rate_sigma = np.sqrt(np.maximum(num_events, 1.0)) / time  
-        
-        # Robust fit
-        event_rate_robfit = robust_fitt(subruns, event_rate.reshape(-1, 1))
-        sigma_cutoff_1 = 60 # for the selection criteria
 
-        # check that this fit is valid for this data
-        if not event_rate_robfit["valid"][0]:
+        sigma_cutoff_1 = 60 
+
+        result_1 = f1(subruns, event_rate, event_rate_sigma, sigma_cutoff_1)
+
+        if not result_1["valid"]:
             disfunctional_1.append(run)
-           # print(f"Filter 1 skipped for {file}, not enough good points for a reliable linear robust fit.")
-            checks_1 = np.array([], dtype=np.int64)
-            z_score_1 = np.array([], dtype=np.float64)
-            slope_1 = np.nan
-            u_slope_1 = np.nan
-            intercept_1 = np.nan
-            u_intercept_1 = np.nan
-            
-        else:
-            event_rate_fit = event_rate_robfit["fit"].flatten() # so to not work with ( , ) but only ()
-            
-            # Selection criteria
-            
-            erate_z_score = np.abs(event_rate - event_rate_fit) / event_rate_sigma
-            mask_1= erate_z_score > sigma_cutoff_1
-            checks_1 = subruns[mask_1]
-            z_score_1 = erate_z_score[mask_1]
-        
+
+
         dictionary.update({
-            "checks_1": checks_1,
-            "z_score_1": z_score_1,
-            "slope_1": event_rate_robfit["slope"][0],
-            "u_slope_1": event_rate_robfit["u_slope"][0],
-            "intercept_1": event_rate_robfit["intercept"][0],
-            "u_intercept_1": event_rate_robfit["u_intercept"][0]
+            "checks_1": result_1["checks"],
+            "z_score_1": result_1["z_score"],
+            "slope_1": result_1["slope"],
+            "u_slope_1": result_1["u_slope"],
+            "intercept_1": result_1["intercept"],
+            "u_intercept_1": result_1["u_intercept"],
         })
-        
-        
-        # FILTER 2: EVENT RATE VS INTENSITY----------------------------------------------------------------------------------------------------
+
+
+
+        # FILTER 2: CDF OF THE INTENSITIES PER SUBRUN----------------------------------------------------------------------------------------------
         hist_intensity = a.root.dl1datacheck.cosmics.col('hist_intensity')[:-1] 
            
         # Event rate per intensity value in each subrun
@@ -192,61 +244,76 @@ def main():
         # with that end we implement the Kolmogorov-Smirnov parameter D = max |F(x) - Fn| which tells us how different are two cumulative distribuition functions
         # we will compare the CDF for each subrun with its neighbours, bc the satellite is expected to crossthe FoV within a fine period of time
         
-        cdf = np.cumsum(hist_intensity / np.maximum(hist_intensity.sum(axis=1, keepdims=True),1), axis=1) #we need to normalize the histogram. 1 cdf per subrun
-        D = np.zeros(n_subruns) 
-        
-        for s in range(0, n_subruns-1):
-            D[s] = np.max(np.abs(cdf[s] - cdf[s+1])) #we compare the CDF in each subrun 's' with its neighbouring one 's+1'
-        
-        #Do a robust fit of D to select the good points
-        D_robust_fit = robust_fitt(subruns, D.reshape(-1, 1))
-        sigma_cutoff_2 = 15 # for the selection criteria
+        cdf_all = np.cumsum(hist_intensity / np.maximum(hist_intensity.sum(axis=1, keepdims=True),1), axis=1) #we need to normalize the histogram. 1 cdf per subrun
 
-        if not D_robust_fit["valid"][0]:
-            disfunctional_2.append(run)
-          #  print(f"Filter 2 skipped for Run {run}, not enough good points for a reliable linear robust fit.")
-            checks_2 = np.array([], dtype=np.int64)
-            z_score_2 = np.array([], dtype=np.float64)
-            slope_2 = np.nan      #not a number, so to store something and the code keeps running
-            u_slope_2 = np.nan
-            intercept_2 = np.nan
-            u_intercept_2 = np.nan
-            
-        else:
-            # This is not a Poisson process therefore we cannot treat it as such
-            D_good = D_robust_fit["good_points"][0][1]  # y-selected values for this column
-            D_fit = D_robust_fit["fit"].flatten()       
-      
-            good_mask_2 = D_robust_fit["good_mask"][0]               
-            D_fit_good = D_fit[good_mask_2]                # take the fit only at the 'good points' to calculate the sigmas
-            
-            sigma_2 = np.std(D_good - D_fit_good)
-            deviations_2 = np.abs(D - D_fit) / sigma_2    # compare all of the values of D to all of the values of the fit
-        
-            
-            # Selection criteria and Subruns to check
-            mask_2 = deviations_2 > sigma_cutoff_2
-            checks_2 = subruns[mask_2]
-            z_score_2 = deviations_2[mask_2]
-        
+        cdf_a = np.cumsum(hist_intensity[:, :101] / np.maximum(hist_intensity[:, :101].sum(axis=1, keepdims=True), 1),axis=1)
+        cdf_b = np.cumsum(hist_intensity[:, 101:1001] / np.maximum(hist_intensity[:, 101:1001].sum(axis=1, keepdims=True), 1),axis=1)
+        cdf_c = np.cumsum(hist_intensity[:, 1001:] / np.maximum(hist_intensity[:, 1001:].sum(axis=1, keepdims=True), 1),axis=1)
+
+        sigma_cutoff_2 = 15
+
+        result_2 = f2(subruns, cdf_all, sigma_cutoff_2)
+        result_2a = f2(subruns, cdf_a, sigma_cutoff_2)
+        result_2b = f2(subruns, cdf_b, sigma_cutoff_2)
+        result_2c = f2(subruns, cdf_c, sigma_cutoff_2)
+
+        if not result_2["valid"]:
+            disfunctional_2.append((run, "all"))
+
+        if not result_2a["valid"]:
+            disfunctional_2.append((run, "a"))
+
+        if not result_2b["valid"]:
+            disfunctional_2.append((run, "b"))
+
+        if not result_2c["valid"]:
+            disfunctional_2.append((run, "c"))
+
         dictionary.update({
-            "checks_2": checks_2,
-            "z_score_2": z_score_2,
-            "slope_2": D_robust_fit["slope"][0],
-            "u_slope_2": D_robust_fit["u_slope"][0],
-            "intercept_2": D_robust_fit["intercept"][0],
-            "u_intercept_2": D_robust_fit["u_intercept"][0],
+            "checks_2": result_2["checks"],
+            "z_score_2": result_2["z_score"],
+            "slope_2": result_2["slope"],
+            "u_slope_2": result_2["u_slope"],
+            "intercept_2": result_2["intercept"],
+            "u_intercept_2": result_2["u_intercept"],
+
+            "checks_2a": result_2a["checks"],
+            "z_score_2a": result_2a["z_score"],
+            "slope_2a": result_2a["slope"],
+            "u_slope_2a": result_2a["u_slope"],
+            "intercept_2a": result_2a["intercept"],
+            "u_intercept_2a": result_2a["u_intercept"],
+
+            "checks_2b": result_2b["checks"],
+            "z_score_2b": result_2b["z_score"],
+            "slope_2b": result_2b["slope"],
+            "u_slope_2b": result_2b["u_slope"],
+            "intercept_2b": result_2b["intercept"],
+            "u_intercept_2b": result_2b["u_intercept"],
+
+            "checks_2c": result_2c["checks"],
+            "z_score_2c": result_2c["z_score"],
+            "slope_2c": result_2c["slope"],
+            "u_slope_2c": result_2c["u_slope"],
+            "intercept_2c": result_2c["intercept"],
+            "u_intercept_2c": result_2c["u_intercept"],
         })
 
-        # Save all the checks together without repeating
-        dictionary["checks"] = np.unique(np.concatenate([
-            np.asarray(dictionary["checks_1"], dtype=np.int64),
-            np.asarray(dictionary["checks_2"], dtype=np.int64),
-        ]))   
-        
-        # pprint(dictionary)
 
+        all_checks = []
 
+        for f in ["1", "2", "2a", "2b", "2c"]:
+            all_checks.extend(dictionary[f"checks_{f}"])
+
+        dictionary["checks"] = np.unique(all_checks)  # storing all of the checks
+
+        coincident_checks = []
+
+        for check in all_checks:
+            if all_checks.count(check) > 1:
+                coincident_checks.append(check)
+
+        dictionary["coincident_checks"] = np.unique(coincident_checks) # also storing the ones appering in various filters
 
 # CREATION OF AN h5 FILE TO STORE THE RELATED DATA FOR THE INTERESTING SUBRUNS----------------------------------------------------------------------------------
         checks_h5 = tables.open_file(r"checks_Run{run}.h5".format(run=run), mode="w") #create a .h5 file for the subruns to check ('checks') for each run
@@ -280,13 +347,38 @@ def main():
             t = checks_h5.create_table("/general", tab, origin_tab.description, "Table {tab} for checks".format(tab=tab))
             t.append(filtered_data)  # append all filtered rows at once, instead of row by row
             t.flush()
+
+        class CoincidentChecks(tables.IsDescription):
+            check_index = tables.Int32Col()
+
+        t = checks_h5.create_table(
+            "/general",
+            "coincident_checks",
+            CoincidentChecks,
+            "Subruns selected by more than one filter"
+        )
+
+        row = t.row
+
+        for check in dictionary["coincident_checks"]:
+            row["check_index"] = check
+            row.append()
+
+        t.flush()        
         
         # PER FILTER GROUP---------------------------------------------------------------
         # for each filter (subgroup) store the checks and relevant parameters
         
-        filters = [1, 2]  # in case we want to enlarge this list in the future-- test
-        sigma_cutoffs = {1: sigma_cutoff_1, 2: sigma_cutoff_2}
-    
+        filters = ["1", "2", "2a", "2b", "2c"]
+
+        sigma_cutoffs = {
+            "1": sigma_cutoff_1,
+            "2": sigma_cutoff_2,
+            "2a": sigma_cutoff_2,
+            "2b": sigma_cutoff_2,
+            "2c": sigma_cutoff_2,
+        }
+        
         class CheckResult(tables.IsDescription):
             check_index = tables.Int32Col()
             z_score = tables.Float64Col()
