@@ -31,11 +31,13 @@ def main():
         file_list = file_list[start:end]
     
     for file in file_list:
+        print("\n" + "="*80)
         print(re.search(r"Run(\d+)", file).group(0))
+        print("="*80)
         
         b = tables.open_file(file)
         
-        for filt in ["filter1", "filter2"]:
+        for filt in ["filter1", "filter2", "filter2a", "filter2b", "filter2c"]:
     
             table = getattr(b.root.perfilter, filt)
             
@@ -46,8 +48,10 @@ def main():
             if len(table) == 0:
                 print("No checks found.")
                 continue
+
+            sigma_cutoff = table[0]["sigma_cutoff"]     
+            print(f"Sigma cutoff = {sigma_cutoff}")
             
-            # Los parámetros del fit son iguales para todas las filas
             fit = table[0]["fit_parameters"]
             slope, u_slope, intercept, u_intercept = fit
             
@@ -62,6 +66,17 @@ def main():
             for row in table:
                 print(f"{row['check_index']:>8} {row['z_score']:>10.3f}")
 
+            
+        print("\nCoincident checks:")
+
+        table = b.root.general.coincident_checks
+        
+        if len(table) == 0:
+            print("  None")
+        else:
+            for row in table:
+                print(f"  {row['check_index']}")
+        
         b.close()
 
 if __name__ == '__main__':
