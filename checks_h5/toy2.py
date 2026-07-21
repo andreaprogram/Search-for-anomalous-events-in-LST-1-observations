@@ -229,7 +229,7 @@ def main():
         event_rate = num_events / time
         event_rate_sigma = np.sqrt(np.maximum(num_events, 1.0)) / time  
 
-        sigma_cutoff_1 = 30 
+        sigma_cutoff_1 = 50 
 
         result_1 = f1(subruns, event_rate, event_rate_sigma, sigma_cutoff_1)
 
