@@ -181,6 +181,9 @@ def main():
             # 3.2 : DETECTION OF POTENTIAL SATELLITES/METEORITES BY IDENTIFYING LINEAR TRACES
             # we expect bodies such as satellites (our main interest) or meteorites to cross the camera FoV in a straight trajectory
             # to check this, having identified the 'affected' pixels, we aim to do a linear fit (PCA) and determine whether the selected pixels do form a straight line via a Chi^2 test 
+
+            # to do the linear fit with the selected pixels, we'll use the PCA method so that our fit does not depend on the frame and we can
+            # include the cases of completely vertical or horizontal lines
             
             # Linear fit to check that indeed the path is linear, we use the engineering camera frame to represent it later: x=-y y=-x
             x_pixels = camera_geom.transform_to(EngineeringCameraFrame()).pix_x[mask_3[checks_3]].value  # .value to remove the units in the array
