@@ -136,6 +136,18 @@ def f1(subruns, event_rate, event_rate_sigma, sigma_cutoff):
 
 
 def f2(subruns, cdf, sigma_cutoff):
+    """
+    if cdf.shape[1] == 0:
+    return {
+        "valid": False,
+        "checks": np.array([], dtype=np.int64),
+        "z_score": np.array([], dtype=np.float64),
+        "slope": np.nan,
+        "u_slope": np.nan,
+        "intercept": np.nan,
+        "u_intercept": np.nan,
+    }
+    """
     n_subruns = len(subruns)
     D = np.zeros(n_subruns)
 
@@ -217,7 +229,7 @@ def main():
         event_rate = num_events / time
         event_rate_sigma = np.sqrt(np.maximum(num_events, 1.0)) / time  
 
-        sigma_cutoff_1 = 60 
+        sigma_cutoff_1 = 30 
 
         result_1 = f1(subruns, event_rate, event_rate_sigma, sigma_cutoff_1)
 
@@ -238,24 +250,31 @@ def main():
 
         # FILTER 2: CDF OF THE INTENSITIES PER SUBRUN----------------------------------------------------------------------------------------------
         hist_intensity = a.root.dl1datacheck.cosmics.col('hist_intensity')[:-1] 
+        intensity_bins = a.root.dl1datacheck.histogram_binning.col('hist_intensity')[0]
            
         # Event rate per intensity value in each subrun
         # Therefore, to perform a more sensitive analysis we'll implement the Kolmogorov-Smirnov statistic, because we want to compare the whole shape of our distribuition
         # with that end we implement the Kolmogorov-Smirnov parameter D = max |F(x) - Fn| which tells us how different are two cumulative distribuition functions
         # we will compare the CDF for each subrun with its neighbours, bc the satellite is expected to crossthe FoV within a fine period of time
+
+        int_a = np.searchsorted(intensity_bins, 100, side="right") #intensities up to 100 p.e.
+        int_b = np.searchsorted(intensity_bins, 1000, side="right") # intensities up to 1000 p.e.
         
         cdf_all = np.cumsum(hist_intensity / np.maximum(hist_intensity.sum(axis=1, keepdims=True),1), axis=1) #we need to normalize the histogram. 1 cdf per subrun
 
-        cdf_a = np.cumsum(hist_intensity[:, :101] / np.maximum(hist_intensity[:, :101].sum(axis=1, keepdims=True), 1),axis=1)
-        cdf_b = np.cumsum(hist_intensity[:, 101:1001] / np.maximum(hist_intensity[:, 101:1001].sum(axis=1, keepdims=True), 1),axis=1)
-        cdf_c = np.cumsum(hist_intensity[:, 1001:] / np.maximum(hist_intensity[:, 1001:].sum(axis=1, keepdims=True), 1),axis=1)
+        cdf_a = np.cumsum(hist_intensity[:, :int_a] / np.maximum(hist_intensity[:, :int_a].sum(axis=1, keepdims=True), 1),axis=1)
+        cdf_b = np.cumsum(hist_intensity[:, int_a:int_b] / np.maximum(hist_intensity[:, int_a:int_b].sum(axis=1, keepdims=True), 1),axis=1)
+        cdf_c = np.cumsum(hist_intensity[:, int_b:] / np.maximum(hist_intensity[:, int_b:].sum(axis=1, keepdims=True), 1),axis=1)
 
-        sigma_cutoff_2 = 15
+        sigma_cutoff_2 = 10
+        sigma_cutoff_2a = 6
+        sigma_cutoff_2b = 10
+        sigma_cutoff_2c = 10
 
         result_2 = f2(subruns, cdf_all, sigma_cutoff_2)
-        result_2a = f2(subruns, cdf_a, sigma_cutoff_2)
-        result_2b = f2(subruns, cdf_b, sigma_cutoff_2)
-        result_2c = f2(subruns, cdf_c, sigma_cutoff_2)
+        result_2a = f2(subruns, cdf_a, sigma_cutoff_2a)
+        result_2b = f2(subruns, cdf_b, sigma_cutoff_2b)
+        result_2c = f2(subruns, cdf_c, sigma_cutoff_2c)
 
         if not result_2["valid"]:
             disfunctional_2.append((run, "all"))
@@ -374,9 +393,9 @@ def main():
         sigma_cutoffs = {
             "1": sigma_cutoff_1,
             "2": sigma_cutoff_2,
-            "2a": sigma_cutoff_2,
-            "2b": sigma_cutoff_2,
-            "2c": sigma_cutoff_2,
+            "2a": sigma_cutoff_2a,
+            "2b": sigma_cutoff_2b,
+            "2c": sigma_cutoff_2c,
         }
         
         class CheckResult(tables.IsDescription):
