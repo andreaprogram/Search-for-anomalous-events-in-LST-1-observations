@@ -206,13 +206,19 @@ def main():
 # include the cases of completely vertical or horizontal lines
                 
                 # Linear fit to check that indeed the path is linear, x=-y y=-x
-                x_pixels = camera_geom.transform_to(EngineeringCameraFrame()).pix_x[mask_3[check]].value  # .value to remove the units in the array, we need to transf to eng. camera frame to plot it correctly
+                x_pixels = camera_geom.transform_to(EngineeringCameraFrame()).pix_x[mask_3[check]].value  # .value to remove the units in the array, 
                 y_pixels = camera_geom.transform_to(EngineeringCameraFrame()).pix_y[mask_3[check]].value
 
                 if len(x_pixels) < 3:
                     continue
                 
                 m_pixels = np.column_stack((x_pixels, y_pixels)) #matrix of the shape columns: pixel, rows: x_pixel, y_pixel
+
+                # Weights for the x and y (are the same for each pixel), the weigh will be the normalized cog rate
+                cog_rate_anomalous = cog_rate[check][mask_3[check]]  
+                
+                # Fit + Elements of the linear fit to draw
+                centroid, direction_vector = wpca(m_pixels, cog_rate_anomalous)
                 
                 pca = PCA(n_components=1)
                 pca.fit(m_pixels)
