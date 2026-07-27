@@ -192,7 +192,7 @@ def main():
 
                     
             chis2 = []
-            p_values = []
+            pixels_matrices = []
             centroids = []
             direction_vectors = []
 
@@ -213,61 +213,41 @@ def main():
                     continue
                 
                 m_pixels = np.column_stack((x_pixels, y_pixels)) #matrix of the shape columns: pixel, rows: x_pixel, y_pixel
+                
 
                 # Weights for the x and y (are the same for each pixel), the weigh will be the normalized cog rate
                 cog_rate_anomalous = cog_rate[check][mask_3[check]]  
                 
                 # Fit + Elements of the linear fit to draw
                 centroid, direction_vector = wpca(m_pixels, cog_rate_anomalous)
+
+                # X^2 TEST TO DETERMINE IF THE PIXELS REALLY FOLLOW A STRAIGHT LINE
+                # Coordinates of the pixels relative to the centroid
+                delta = m_pixels - centroid
                 
-                pca = PCA(n_components=1)
-                pca.fit(m_pixels)
+                #Distances (orthogonal) from the center of the pixels to the line of the fit
+                distances = np.abs(delta[:, 0] * direction_vector[1] - delta[:, 1] * direction_vector[0])
                 
-                centroid = pca.mean_
-                direction_vector = pca.components_[0]
-                centroids.append(centroid)
-                direction_vectors.append(direction_vector)
-                
-                projection = (m_pixels - centroid) @ direction_vector # projection of the position of the pixels with respect to the centroid along the direction vector
-                
-                t = np.linspace(projection.min(), projection.max(), 100) # drawing the line along the pixels used by the fit
-                
-                x_pca = centroid[0] + t * direction_vector[0]
-                y_pca = centroid[1] + t * direction_vector[1]
-                
-# 3.3: X^2 TEST TO DETERMINE IF THE PIXELS REALLY FOLLOW A STRAIGHT LINE
-                
-                #Distances (orthogonal) from the center of the pixel to the fit
-                line = LineString([(x_pca[0], y_pca[0]), (x_pca[-1], y_pca[-1])])
-                distances = []
-                
-                for x, y in zip(x_pixels, y_pixels):
-                    point = Point(x, y)
-                    distances.append(line.distance(point))
-                
-                distances = np.array(distances)
-                
-                # Pixel position uncertainty (choose the appropriate value)
+                # Uncertainty of pixels !! this will have to be changed !!
                 sigma_pixel = (focal_length.value)*np.tan(np.radians(0.05)) # width of the pixel ~2.44 cm
                 
-                # Chi-square------------------------------------------------------
+                # Chi-square
                 # Chi2 Calculated
-                chi2_data = np.sum((distances / sigma_pixel)**2)
-            
-                # p-value
-                dof = len(distances) - 2
-                p_value = 1 - chi2.cdf(chi2_data, dof)
+                chi2_data = np.sum( cog_rate_anomalous * (distances / sigma_pixel)**2 ) / np.sum(cog_rate_anomalous)
 
+                
+                pixels_matrices.append(m_pixels)
+                centroids.append(centroid)
+                direction_vectors.append(direction_vector)
                 chis2.append(chi2_data)
-                p_values.append(p_value)
 
                 
             dictionary.update({
                 "checks_3": checks_3,
-                "chis2": chis2,
-                "p_values": p_values,
+                "pixels_matrices": pixels_matrices,
                 "centroids": centroids,
                 "direction_vectors": direction_vectors,
+                "chis2": chis2
             })
             # !!!!!!!!! HERE WRITE THE ULTIMATE CONDITION FOR THE SUBRUN TO BE CONSIDERED INTERESTING BASED ON CHI2 OR P-VALUE
 
