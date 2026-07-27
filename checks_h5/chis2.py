@@ -161,11 +161,10 @@ def main():
         if run in invalid_runs:
                 print(f"Skipping Run {run}: both filters invalid")
                 a.close()
+                b.close()
                 continue
 
-# FILTERS TO DETECT ANOMALIES-----------------------------------------------------------------------------------------------------------------------------------
-        dictionary = {}
-
+# FILTERS TO DETECT ANOMALIES----------------------------------------------------------------------------------------------------------------------------------
         # First: use the whole original datacheck to see the tendency of the rate of CoG per pixel along subruns
         
         # USEFUL VARIABLES
@@ -213,11 +212,39 @@ def main():
             for c in checks:
                 if np.any(mask_3[c]):
                     checks_3_pre.append(c)
-                   
-            chis2 = []
-            dofs = []
-            checks_3 = []
 
+            if len(checks_3_pre)==0:
+                print(f"No subrun of Run {run} has survived the cutoff, skip")
+                a.close()
+                b.close()
+                continue
+                
+# CREATION OF AN h5 FILE TO STORE THE DIFFERENT VALUES OF CHI2 AND DETERMINE EXPERIMENTALLY A REASONABLE VALUE FOR SIGMA_PIXEL----------------------------------------------------------------------
+            chis_h5 = tables.open_file(r"chis_Run{run}.h5".format(run=run), mode="w") 
+        
+        # In these files, we want to store:
+        # checks_3 : subruns to check given by FILTER 3: DETECTION OF STRAIGHT PATHS WITHIN THE INTERESTING SUBRUNS
+        
+        # and then, for each of those interesting subruns, store the following information:
+        # - m_pixels : array with the positions of the anomalous pixels, from which we get the number of dof
+        # - CHI2
+
+            chis_h5.create_group("/", "chis2", "Chi^2 of several interesting subruns")
+    
+            class ChiSquared(tables.IsDescription):
+                check_index = tables.Int32Col()
+                dof = tables.Int32Col()
+                chi2 = tables.Float64Col()
+                
+            t = chis_h5.create_table(
+                "/chis2",
+                "results",
+                ChiSquared,
+                "Chi^2 of several interesting subruns"
+            )
+            
+            row = t.row
+            
             for check in checks_3_pre:
 # 3.2: PCA FIT OF THE SELECTED PIXELS
 # we expect bodies such as satellites (our main interest) or meteorites to cross the camera FoV in a straight trajectory
@@ -232,11 +259,8 @@ def main():
 
                 if len(x_pixels) < 3:
                     continue
-
-                
                 
                 m_pixels = np.column_stack((x_pixels, y_pixels)) #matrix of the shape columns: pixel, rows: x_pixel, y_pixel
-
 
                 # Weights for the x and y (are the same for each pixel), the weigh will be the normalized cog rate
                 cog_rate_anomalous = cog_rate[check][mask_3[check]]  
@@ -259,55 +283,11 @@ def main():
                 chi2_data = np.sum( cog_rate_anomalous * (distances / sigma_pixel)**2 ) / np.sum(cog_rate_anomalous)
                 dof = len(m_pixels) - 2 #  Number of degrees of freedom of the associated theoretical chi2
 
-                checks_3.append(check)
-                dofs.append(dof)
-                chis2.append(chi2_data)
+                row["check_index"] = check
+                row["chi2"] = chi2_data
+                row["dof"] = dof
 
-                
-            dictionary.update({
-                "checks_3": checks_3,
-                "dofs": dofs,
-                "chis2": chis2
-            })
-            # !!!!!!!!! HERE WRITE THE ULTIMATE CONDITION FOR THE SUBRUN TO BE CONSIDERED INTERESTING BASED ON CHI2 OR P-VALUE
-
-
-# CREATION OF AN h5 FILE TO STORE THE DIFFERENT VALUES OF CHI2 AND DETERMINE EXPERIMENTALLY A REASONABLE VALUE FOR SIGMA_PIXEL----------------------------------------------------------------------
-        chis_h5 = tables.open_file(r"chis_Run{run}.h5".format(run=run), mode="w") 
-        
-        # In these files, we want to store:
-        # checks_3 : subruns to check given by FILTER 3: DETECTION OF STRAIGHT PATHS WITHIN THE INTERESTING SUBRUNS
-        
-        # and then, for each of those interesting subruns, store the following information:
-        # - m_pixels : array with the positions of the anomalous pixels, from which we get the number of dof
-        # - CHI2
-
-
-        chis_h5.create_group("/", "chis2", "Chi^2 of several interesting subruns")
-
-        class ChiSquared(tables.IsDescription):
-            check_index = tables.Int32Col()
-            dofs = tables.Int32Col()
-            chi2 = tables.Float64Col()
-            
-        t = chis_h5.create_table(
-            "/chis2",
-            "chis2",
-            ChiSquared,
-            "Chi^2 of several interesting subruns"
-        )
-        
-        row = t.row
-        for c, d, chi2_data in zip(
-                dictionary["checks_3"],
-                dictionary["dofs"],
-                dictionary["chis2"]):
-        
-            row["check_index"] = c
-            row["chi2"] = chi2_data
-            row["dofs"] = d
-
-            row.append()
+                row.append()
         
         t.flush()
             
@@ -319,3 +299,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
