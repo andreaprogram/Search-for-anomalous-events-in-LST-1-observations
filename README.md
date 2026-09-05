@@ -8,3 +8,4 @@
 - chis2.py and chis2_notebook.ipynb
 - satellite_identification.ipynb
 - anomaly_classification.py
+- filters_results.ipynb
