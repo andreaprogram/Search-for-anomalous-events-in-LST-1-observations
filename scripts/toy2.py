@@ -1,3 +1,7 @@
+# THE GOAL OF THIS SCRIPT IS TO, GIVEN A INPUT 'RunXXXXX.h5' DATACHECKFILE WITH DATA OF AN OBSERVATION, EXECUTE FILTERS 1 AND 2 TO DETECT SUBRUNS IN WHICH 
+# AN ANOMALOUS EVENT MIGHT HAVE OCURRED. THEN, GENERATE AN OUTPUT 'checks_RunXXXXX.h5' FILE THAT CONTAINS SUCH SUBRUNS TO CHECK ('CHECKS') AND ALL THE INFORMATION RELATED TO
+# THEM THAT WAS STORED IN THE ORIGINAL FILE PLUS THE INFORMATION OBTAINED BY THE FILTERS 1 AND 2
+
 import glob # to search files using paths
 import argparse  # to give an argument when executing the script
 
@@ -34,16 +38,18 @@ parser.add_argument(     # starting point if the set of files
 )
 
 # ROBUST FIT FUNCTION 
+# we will use a robust fit, namely, a fit that does not consider data points that deviate too much from the general tendency to do our analysis
+
 def robust_fitt(x, y, z_thresh=3.5):
     X = x.astype(float).reshape(-1, 1)
     Xc = sm.add_constant(X)
-    fit = np.zeros_like(y, dtype=float)
-    slope = np.zeros(y.shape[1])
-    u_slope = np.zeros(y.shape[1])
-    intercept = np.zeros(y.shape[1])
-    u_intercept = np.zeros(y.shape[1])
-    good_points = []
-    valid = []  # True/False per column
+    fit = np.zeros_like(y, dtype=float)    # the fit points predicted by the model
+    slope = np.zeros(y.shape[1])           # the slope of the fit
+    u_slope = np.zeros(y.shape[1])         # the uncertainty of the slope of the fit
+    intercept = np.zeros(y.shape[1])       # the intercept of the fit 
+    u_intercept = np.zeros(y.shape[1])     # the uncertainty of the intercept of the fit
+    good_points = []                       # the points selected to do the fit 
+    valid = []  # True/False per column      whether the robust fit could be done or not
     good_masks = [] #to get the positions of the good points
 
     for p in range(y.shape[1]):
@@ -58,7 +64,7 @@ def robust_fitt(x, y, z_thresh=3.5):
 
         good_point = (None, None)
         try:
-            if good.sum() < 0.6 * len(x):
+            if good.sum() < 0.6 * len(x):  # we will demand that the fit can be done with at least 60$ of the data, if not, our model is not valid
                 raise ValueError("Less than 60% of the points could be selected for the robust fit")
         
             model = sm.OLS(yp[good], Xc[good]).fit()
@@ -77,7 +83,7 @@ def robust_fitt(x, y, z_thresh=3.5):
         
             valid.append(True)
         
-        except Exception as e:
+        except Exception as e:   # if the fit is not valid, store nans to be able to record it in the h5 file either way
             print(f"Robust fit failed in column {p}: {e}")
         
             fit[:, p] = np.nan
@@ -111,14 +117,17 @@ valid        : list length y.shape[1]
 """
 sigma : uncertainty associated with the input data (Poisson's, stdev,...)
 z_scores : # of sigmas by which a point in the data deviates from the linear fit
-sigma_cutoff : # of sigmas by which we determine a zscore as anomalous
+sigma_cutoff : # of sigmas by which we determine the z_score of a subrun as anomalous.
+
+Note: the sigma_cutoff values for Filters 1 and 2 have been previously determined through the script 'zscores_calc.py' and the notebook 'zscores_notebook.ipynb'
+      such are values that present a reasonable ratio of false positives while trying to avoid the loss of interesting cases.
 
 """
 def f1(subruns, event_rate, event_rate_sigma, sigma_cutoff):
 
     event_rate_robfit = robust_fitt(subruns, event_rate.reshape(-1, 1))
 
-    if not event_rate_robfit["valid"][0]:
+    if not event_rate_robfit["valid"][0]:   
         return {
             "valid": False,
             "checks": np.array([], dtype=np.int64),
@@ -153,18 +162,6 @@ def f1(subruns, event_rate, event_rate_sigma, sigma_cutoff):
 
 
 def f2(subruns, cdf, sigma_cutoff):
-    """
-    if cdf.shape[1] == 0:
-    return {
-        "valid": False,
-        "checks": np.array([], dtype=np.int64),
-        "z_score": np.array([], dtype=np.float64),
-        "slope": np.nan,
-        "u_slope": np.nan,
-        "intercept": np.nan,
-        "u_intercept": np.nan,
-    }
-    """
     n_subruns = len(subruns)
     D = np.zeros(n_subruns)
 
@@ -188,14 +185,13 @@ def f2(subruns, cdf, sigma_cutoff):
         }
 
     else:
-        # This is not a Poisson process therefore we cannot treat it as such
         D_good = D_robust_fit["good_points"][0][1]
         D_fit = D_robust_fit["fit"].flatten()
 
         good_mask = D_robust_fit["good_mask"][0]
         D_fit_good = D_fit[good_mask]
 
-        sigma = np.std(D_good - D_fit_good)
+        sigma = np.std(D_good - D_fit_good)    # in this case, it is not a Poisson process therefore the uncertainty is the standard deviation of the points wrt the fit (for the points selected as good to do the fit)
 
         if sigma <= 1e-12:
             return {
@@ -227,7 +223,7 @@ def f2(subruns, cdf, sigma_cutoff):
 
 def main():
     args = parser.parse_args()  #read arguments
-    file_list = sorted(glob.glob(args.input_files))
+    file_list = sorted(glob.glob(args.input_files)) # order the files by name (run number)
 
     if args.batch_size is not None:
         start = args.batch * args.batch_size
@@ -259,16 +255,27 @@ def main():
 # FILTERS TO DETECT ANOMALIES-----------------------------------------------------------------------------------------------------------------------------------
             dictionary = {}
             # USEFUL VARIABLES
+            # note: we will always discard the data of the last subrun to avoid false positives given that it is usually shorter than the others
+            
             subruns = a.root.dl1datacheck.cosmics.col('subrun_index')[:-1] #0,1,...,57 number of subruns in this run
             time = a.root.dl1datacheck.cosmics.col('elapsed_time')[:-1] 
             
             
             # FILTER 1: EVENT RATE PER SUBRUN----------------------------------------------------------------------------------------------------
+            # We expect the event rate per subrun to present a linear behaviour (whether it is constant, increasing or decreasing depending on the observation 
+            # conditions), therefore this filter selects the subruns for which the number of events deviates from the robust fit of the data by a number of 
+            # sigmas greater than the sigma cutoff. 
+
+            # We expect the event rate to present anomalies when a satellite comes in the FoV
+            # for a really bright one, the pixels in the camera might de-activate as a safety measure, making the rate drop
+            # for a satellite not that bright, there might be a peak in the rate.
+            
             num_events = a.root.dl1datacheck.cosmics.col('num_events')[:-1]  # events in each subrun
             event_rate = num_events / time
-            event_rate_sigma = np.sqrt(np.maximum(num_events, 1.0)) / time  
+            event_rate_sigma = np.sqrt(np.maximum(num_events, 1.0)) / time 
+            # in this case we take the uncertainty to be the squared of the content because the number of event is a Poisson-like quantity
     
-            sigma_cutoff_1 = 20 
+            sigma_cutoff_1 = 20  
     
             result_1 = f1(subruns, event_rate, event_rate_sigma, sigma_cutoff_1)
     
@@ -290,13 +297,22 @@ def main():
     
     
             # FILTER 2: CDF OF THE INTENSITIES PER SUBRUN----------------------------------------------------------------------------------------------
-            hist_intensity = a.root.dl1datacheck.cosmics.col('hist_intensity')[:-1] 
+            hist_intensity = a.root.dl1datacheck.cosmics.col('hist_intensity')[:-1] # Event rate per intensity value in each subrun
             intensity_bins = a.root.dl1datacheck.histogram_binning.col('hist_intensity')[0]
-               
-            # Event rate per intensity value in each subrun
-            # Therefore, to perform a more sensitive analysis we'll implement the Kolmogorov-Smirnov statistic, because we want to compare the whole shape of our distribuition
-            # with that end we implement the Kolmogorov-Smirnov parameter D = max |F(x) - Fn| which tells us how different are two cumulative distribuition functions
-            # we will compare the CDF for each subrun with its neighbours, bc the satellite is expected to crossthe FoV within a fine period of time
+            
+            # Filter 1 is not a precise filter due to the fact that there are numerous reasons for which the event rate can deviate from the tendency 
+            # that do not imply an anomaly      
+            
+            # Therefore, to perform a more sensitive analysis we'll implement the Kolmogorov-Smirnov statistic, because we want to compare the whole shape of our distribuition (histograms) 
+            # with that end, we implement the Kolmogorov-Smirnov parameter D = max |F(x) - Fn| which tells us how different are two cumulative distribuition functions
+            # we will compare the CDF for each subrun with its neighbours, bc satellites are expected to cross the FoV within a small period of time (1 or 2 subruns)
+
+            # Furthermore, to obtain even more detailed information about the type of anomalous events that we encounter, we will run Filter 2 
+            # over different intensities intervals:
+            # F2 : all intenisities
+            # F2a : intensities from 0-100 p.e. (according to our observations, satellites are expected to appear mainly in this range)
+            # F2b : intenisties from 100-1000 p.e. 
+            # F2c : intenisties from 1000 - ... p.e.
     
             int_a = np.searchsorted(intensity_bins, 100, side="right") #intensities up to 100 p.e.
             int_b = np.searchsorted(intensity_bins, 1000, side="right") # intensities up to 1000 p.e.
@@ -369,7 +385,7 @@ def main():
     
             dictionary["checks"] = np.unique(all_checks)  # storing all of the checks
     
-            coincident_checks = []
+            coincident_checks = []    # it is also of interest to know the subruns that appear as anomalous according to various filters
     
             for check in all_checks:
                 if all_checks.count(check) > 1:
@@ -381,12 +397,12 @@ def main():
             checks_h5 = tables.open_file(r"checks_Run{run_str}.h5".format(run_str=run_str), mode="w") #create a .h5 file for the subruns to check ('checks') for each run
             
             # In these files, we want to store:
-            # checks_1 : subruns to check given by FILTER 1: EVENT RATE
-            # checks_2 : subruns to check given by FILTER 2: EVENT RATE VS INTENSITY
+            # checks_1 : subruns to check given by FILTER 1: EVENT RATE PER SUBRUN
+            # checks_2 : subruns to check given by FILTER 2 (2, 2a, 2b, 2c): CDF OF THE INTENSITIES PER SUBRUN
             
             # and then, for each of those interesting subruns, store the following information (for reference check toy1.ipynb):
             # - All the information contained in the dl1datacheck file of the subrun
-            # - For checks_f: the z_score
+            # - For checks_f: the z_score, so to know "how much" do the point deviate from the tendency
             
             checks_h5.create_group("/", "general", "General information of the checks") 
             checks_h5.create_group("/", "perfilter", "Information of the checks per filter")
