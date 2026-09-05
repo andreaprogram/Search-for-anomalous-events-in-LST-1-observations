@@ -303,6 +303,7 @@ def main():
                         
                         # Uncertainty of the points used in the fit
                         sigma_pixel = 0.01 # 1cm
+                        # Note: this value has been observed to be reasonable through the analysis done in chis2.py
                         
                         # Chi-square
                         # Chi2 Calculated
@@ -311,8 +312,6 @@ def main():
                         p_value = 1 - chi2.cdf(chi2_data, dof)
         
                         # Cutoff for the p-value. 
-                        # Note: this value has been observed to not present too many false positves while not loosing relevant information though the analysis
-                        # done in chis_together.py
                         p_cutoff = 0.05
         
                         if p_value <= p_cutoff: 
