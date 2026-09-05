@@ -1,3 +1,8 @@
+# THE GOAL OF THIS SCRIPT IS TO, GIVEN A INPUT 'checks_RunXXXXX.h5' WITH THE DATA OBTAINED FROM FILTER 1 AND 2, MAINLY, IF THERE ARE ANY ANOMALOUS SUBRUNS
+# ('CHECKS') OR NOT, AND THEIR REALATIVE INFORMATION, EXECUTE FILTER 3 TO DETECT, WITHIN SUBRUNS PREVIOUSLY CATHEGORIZED AS ANOMALOUS, IF THERE ARE 
+# STRAIGHT-LIKE TRAJECTORIES IN THOSE SUBRUNS, AS IN THE CASE OF SATELLITES.
+# THEN, GENERATE AN OUTPUT 'straightpaths_RunXXXXX.h5' FILE THAT CONTAINS SUCH SUBRUNS TO CHECK ('CHECKS') AND ALL THE INFORMATION GIVEN BY FILTER 3
+
 import glob # to search files using paths
 import argparse  # to give an argument when executing the script
 
@@ -125,12 +130,13 @@ def wpca(m, w):
     
   main_axis_index = np.argmax(eigenvalues)
   minor_axis_index = np.argmin(eigenvalues)
+
+  major_axis = np.sqrt(max(eigenvalues[main_axis_index], 0))  # major and minor axis of the pixels distribuition 
+  minor_axis = np.sqrt(max(eigenvalues[minor_axis_index], 0))
     
   direction_vector = eigenvectors[:, main_axis_index]
-  minor_axis = eigenvectors[:, minor_axis_index]  
 
-
-  return centroid, direction_vector, minor_axis
+  return centroid, direction_vector, major_axis, minor_axis
 
 # CAMERA GEOMETRY---------------------- 
 sa = LSTEventSource.create_subarray(tel_id=1)
@@ -152,7 +158,7 @@ def main():
         run = int(re.search(r"Run(\d+)", datacheck_file).group(1))
     
         if run in checks_dict:
-            paired_files.append((datacheck_file, checks_dict[run]))
+            paired_files.append((datacheck_file, checks_dict[run]))   # we sort and pair the checks and datacheckfiles by run id
 
     if args.batch_size is not None:
         start = args.batch * args.batch_size
@@ -160,158 +166,240 @@ def main():
         paired_files = paired_files[start:end]
        
 
-    disfunctional_3 = []
+    disfunctional_3 = []  # lists to store the runs that present errors for filter 3 
+    errored_runs = []
 
     
     for datacheck_file, checks_file in paired_files:
 
-        a = tables.open_file(datacheck_file)   # datacheck
-        b = tables.open_file(checks_file)      # checks_Run
-
-        run = int(re.search(r"Run(\d+)", datacheck_file).group(1)) # integer number
-
-        # Firstly, check if this run has checks (this includes normal and invalid runs but both are treated equally)               
-        checks =  b.root.general.cosmics.col('subrun_index') # look at the checks previously selected by toy2.py and see if they satisfy the condition for Filter 3
-        if len(checks) == 0:
-            #print(f"Run {run} does not have subruns to check, skip")
-            a.close()
-            b.close()
+        try:
+            a = tables.open_file(datacheck_file)  # datacheck
+            b = tables.open_file(checks_file)   # checks_Run
+        except Exception as e:
+            errored_runs.append((datacheck_file, str(e)))
             continue
 
-# FILTERS TO DETECT ANOMALIES----------------------------------------------------------------------------------------------------------------------------------
-        # First: use the whole original datacheck to see the tendency of the rate of CoG per pixel along subruns
-        
-        # USEFUL VARIABLES
-        subruns = a.root.dl1datacheck.cosmics.col('subrun_index')[:-1] #0,1,...,57 number of subruns in this run
-        time = a.root.dl1datacheck.cosmics.col('elapsed_time')[:-1] 
-        subrun_to_row = {subrun: row for row, subrun in enumerate(subruns)}
+        run_str = re.search(r"Run(\d+)", datacheck_file).group(1) # to take run id's starting with 0 
+        run = int(run_str) # integer number
 
-        # FILTER 3: DETECTION OF POTENTIAL SATELLITES/METEORITES BY IDENTIFYING LINEAR TRACES--------------------------------------------------------------------------------------------------
-        # we expect the cog within pixel rate to increase with respect to its tendency in the subrun where we have the anomaly in the pixels by which it crosses
-        cog_pixel = a.root.dl1datacheck.cosmics.col('cog_within_pixel')[:-1]  # shape: (n_subruns, n_pixels)
-        
-        cog_rate = cog_pixel / time[:, None]
-        cog_sigma = np.sqrt(np.maximum(cog_pixel, 1.0)) / time[:, None] # Poisson-like uncertainty associated to each value
-        
-        
-        # 3.1. FLUCTUATIONS OF COG WITHIN PIXEL 
-        # ROBUST FIT TO SELECT PIXELS IN WHICH THE ANOMALY HAS FALLEN 
-        cog_robfit = robust_fitt(subruns, cog_rate)  # we are contructing a linear robust fit for each pixel along all the subruns in the run
+        reason = None  # to store the reason if the file gives error
 
-        if not any(cog_robfit["valid"]):
-            disfunctional_3.append(run) 
-            a.close()
-            b.close()
-            continue
-
-        else:
-            cog_fit = cog_robfit["fit"]
-        
-            # Selection criteria
-            sigma_cutoff_3 = 3
-            cog_z_score = (cog_rate - cog_fit) / cog_sigma
-            mask_3 = (cog_z_score) > sigma_cutoff_3 # when taking np.abs(z_score), much more anomalous pixels appear
-
+        try:
+            spath_h5 = tables.open_file(r"straightpaths_Run{run}.h5".format(run=run), mode="w")
+            # Firstly, check if this run has checks (this includes normal and invalid runs but both are treated equally)               
+            checks =  b.root.general.cosmics.col('subrun_index') # look at the checks previously selected by toy2.py and see if they satisfy the condition for Filter 3
+            if len(checks) == 0:
+                reason = "No subruns to check in input file"
+                
+    
+    # FILTERS TO DETECT ANOMALIES----------------------------------------------------------------------------------------------------------------------------------
+            # We expect that the number of times the CoG of an event has fallen into a pixel shows a linear behaviour along the run
+            # therefore, we will look for subruns (among those selected by F1, F2) in which this quanitity deviates from its tendency along the observation.
+            # For the pixels and the subruns in which this happens, we will try to determine if the pixels affected form a straight line.
+            # In the cases that this occurs, such subruns will be marked.
             
-            # SELECTION OF THE PIXELS
-            # Select subrun interesting to check according to this filter
-            # we'll look at the checks previously selected by toy2.py and see if they satisfy the condition for Filter 3
-            
-            checks_cog = [] # subruns marked as anomalous by the cog condition
-
-            for c in checks:
-                if c not in subrun_to_row:
-                    continue
-            
-                anomalous_row = subrun_to_row[c]
-            
-                if np.any(mask_3[anomalous_row]):
-                    checks_cog.append(c)
-  
-            if len(checks_cog)==0:
-                print(f"No subrun of Run {run} has survived the cutoff, skip")
-                a.close()
-                b.close()
-                continue
-
-# CREATION OF AN h5 FILE TO STORE THOSE SUBRUNS WHO, HAVING BEEN MARKED AS ANOMALOUS BY F1, F2, ARE ALSO ANOMALOUS FOR F3----------------------------------------------------------------------
-            chis_h5 = tables.open_file(r"chis_Run{run}.h5".format(run=run), mode="w") 
+            # First: use the whole original datacheck to see the tendency of the rate of CoG per pixel along subruns
+    
+            if reason is None:
+                # USEFUL VARIABLES
+                subruns = a.root.dl1datacheck.cosmics.col('subrun_index')[:-1] #0,1,...,57 number of subruns in this run
+                time = a.root.dl1datacheck.cosmics.col('elapsed_time')[:-1] 
+                subrun_to_row = {subrun: row for row, subrun in enumerate(subruns)}
         
-        # In these files, we want to store:
-        # checks_3 : subruns to check given by FILTER 3: DETECTION OF STRAIGHT PATHS WITHIN THE INTERESTING SUBRUNS
-     
-        # and then, for each of those interesting subruns, store the following information:
-        # - dof : degrees of freedom of the theoretical chi2 i.e. number of selected pixels - 2(parameters)
-        # - centroid and direction vector of the CoG distribuition
-        # - CHI2 
-        # - p-value
+                # FILTER 3: DETECTION OF POTENTIAL SATELLITES/METEORITES BY IDENTIFYING LINEAR TRACES--------------------------------------------------------------------------------------------------
+                # we expect the cog within pixel rate to increase with respect to its tendency in the subrun where we have the anomaly in the pixels by which it crosses
+                cog_pixel = a.root.dl1datacheck.cosmics.col('cog_within_pixel')[:-1]  # shape: (n_subruns, n_pixels)
+                
+                cog_rate = cog_pixel / time[:, None]
+                cog_sigma = np.sqrt(np.maximum(cog_pixel, 1.0)) / time[:, None] # Poisson-like uncertainty associated to each value
+                
+                
+                # 3.1. FLUCTUATIONS OF COG WITHIN PIXEL 
+                # ROBUST FIT TO SELECT PIXELS IN WHICH THE ANOMALY HAS FALLEN 
+                cog_robfit = robust_fitt(subruns, cog_rate)  # we are contructing a linear robust fit for each pixel along all the subruns in the run
+        
+                if not any(cog_robfit["valid"]):
+                    disfunctional_3.append(run) 
+                    reason = "Robust fit failed (disfunctional run)"
+                    
+            if reason is None:
+                cog_fit = cog_robfit["fit"]
+            
+                # Selection criteria
+                sigma_cutoff_3 = 3
+                cog_z_score = (cog_rate - cog_fit) / cog_sigma
+                mask_3 = (cog_z_score) > sigma_cutoff_3 # when taking np.abs(z_score), much more anomalous pixels appear
+    
+                
+                # SELECTION OF THE PIXELS
+                # Select subrun interesting to check according to this filter
+                # we'll look at the checks previously selected by toy2.py and see if they satisfy the condition for Filter 3
+                
+                checks_cog = [] # subruns marked as anomalous by the cog condition
+    
+                for c in checks:
+                    if c not in subrun_to_row:
+                        continue
+                
+                    anomalous_row = subrun_to_row[c]
+                
+                    if np.any(mask_3[anomalous_row]):
+                        checks_cog.append(c)
+      
+                if len(checks_cog)==0:
+                    reason = f"No subrun of Run {run_str} has survived the cutoff, skip"
+         
+    
+                checks_3 = []
+                dofs = []
+                centroids = []
+                direction_vectors = []
+                chis2 = []
+                p_values = []
+                t_mins = []
+                t_maxs = []
+    
+                
+                if reason is None:
+                    for check in checks_cog:
+        # 3.2: PCA FIT OF THE SELECTED PIXELS
+        # we expect bodies such as satellites (our main interest) or meteorites to cross the camera FoV in a straight trajectory
+        # to check this, having identified the 'affected' pixels, we aim to do a linear fit (PCA) and determine whether the selected pixels do form a straight line via a Chi^2 test 
+        
+        # to do the linear fit with the selected pixels, we'll use the PCA method so that our fit does not depend on the frame and we can
+        # include the cases of completely vertical or horizontal lines
+        
+                        # Linear fit to check that indeed the path is linear, (Engineering frame: x=-y y=-x)
+                        anomalous_row = subrun_to_row[check]
+                        x_pixels = camera_geom.transform_to(EngineeringCameraFrame()).pix_x[mask_3[anomalous_row]].value  # .value to remove the units in the array, 
+                        y_pixels = camera_geom.transform_to(EngineeringCameraFrame()).pix_y[mask_3[anomalous_row]].value
+                            
+                        if len(x_pixels) < 8:    #impose the selection of at least 8 pixels
+                            continue
+                        
+                        m_pixels = np.column_stack((x_pixels, y_pixels)) #matrix of the shape columns: pixel, rows: x_pixel, y_pixel
+        
+                        # Weights for the x and y (are the same for each pixel), the weight will be the normalized cog rate
+                        cog_rate_anomalous = cog_rate[anomalous_row][mask_3[anomalous_row]]  
+                        
+                        # Fit + Elements of the linear fit to draw
+                        centroid, direction_vector, major_axis, minor_axis = wpca(m_pixels, cog_rate_anomalous)
+                        projection = (m_pixels - centroid) @ direction_vector # projection of the position of the pixels with respect to the centroid along the direction vector
 
-
+                        # extrema of the parameter parametrizing the fit line to draw
+                        t_min = projection.min()
+                        t_max = projection.max()
+            
+                        # X^2 TEST TO DETERMINE IF THE PIXELS REALLY FOLLOW A STRAIGHT LINE
+        
+                        if major_axis < 3*minor_axis:    #impose the major axis is 3 times the minor axis of the distribuition
+                            continue
+                            
+                        # Coordinates of the pixels relative to the centroid
+                        delta = m_pixels - centroid
+                        
+                        #Distances (orthogonal) from the center of the pixels to the line of the fit
+                        distances = np.abs(delta[:, 0] * direction_vector[1] - delta[:, 1] * direction_vector[0])
+                        
+                        # Uncertainty of the points used in the fit
+                        sigma_pixel = 0.01 # 1cm
+                        
+                        # Chi-square
+                        # Chi2 Calculated
+                        chi2_data = np.sum( cog_rate_anomalous * (distances / sigma_pixel)**2 ) / np.sum(cog_rate_anomalous)
+                        dof = len(m_pixels) - 2 #  Number of degrees of freedom of the associated theoretical chi2
+                        p_value = 1 - chi2.cdf(chi2_data, dof)
+        
+                        # Cutoff for the p-value. 
+                        # Note: this value has been observed to not present too many false positves while not loosing relevant information though the analysis
+                        # done in chis_together.py
+                        p_cutoff = 0.05
+        
+                        if p_value <= p_cutoff: 
+                            continue
+        
+                        checks_3.append(check)
+                        dofs.append(dof)
+                        centroids.append(centroid)
+                        direction_vectors.append(direction_vector)
+                        chis2.append(chi2_data)
+                        p_values.append(p_value)
+                        t_mins.append(t_min)  
+                        t_maxs.append(t_max)
+    
+                    if len(checks_3) == 0:
+                        reason = "No subruns survived PCA/Chi2 straight path "
+    
+    # CREATION OF AN h5 FILE TO STORE THOSE SUBRUNS WHO, HAVING BEEN MARKED AS ANOMALOUS BY F1, F2, ARE ALSO ANOMALOUS FOR F3----------------------------------------------------------------------
+                
+                
+                # In these files, we want to store:
+                # checks_3 : subruns to check given by FILTER 3: DETECTION OF STRAIGHT PATHS WITHIN THE INTERESTING SUBRUNS
+             
+                # and then, for each of those interesting subruns, store the following information:
+                # - dof : degrees of freedom of the theoretical chi2 i.e. number of selected pixels - 2(parameters)
+                # - centroid and direction vector of the CoG distribuition
+                # - CHI2 
+                # - p-value
+        
             class Results(tables.IsDescription):
+                run_id = tables.Int64Col()
                 check_index = tables.Int32Col()
                 dof = tables.Int32Col()
-                centroid = tables.Float64Col()
-                direction_vector = tables.Float64Col()
+                centroid = tables.Float64Col(shape=(2,))
+                direction_vector = tables.Float64Col(shape=(2,))
                 chi2 = tables.Float64Col()
                 p_value = tables.Float64Col()
+                p_cutoff = tables.Float64Col()
+                t_min = tables.Float64Col()
+                t_max = tables.Float64Col()
+                status_reason    = tables.StringCol(100)
+                
 
-            t = chis_h5.create_table("/", "checks", Results, "Interesting subruns and related data according to Filter 3")           
+            t = spath_h5.create_table("/", "checks", Results, "Interesting subruns and related data according to Filter 3")           
             row = t.row
+                
+            if reason is not None:
+                        row['run_id']           = run_str
+                        row['check_index']      = -1
+                        row['dof']              = -1
+                        row['centroid']         = [0.0, 0.0]
+                        row['direction_vector'] = [0.0, 0.0]
+                        row['chi2']             = -1.0
+                        row['p_value']          = -1.0
+                        row['p_cutoff']          = -1.0
+                        row['t_min']          = -1.0
+                        row['t_max']          = -1.0
+                        row['status_reason']    = reason
+                        row.append()
+
+            else:
+                for s, d, c, dv, chi, p, tmin, tmax in zip(checks_3, dofs, centroids, direction_vectors, chis2, p_values, t_mins, t_maxs):
+                        row['run_id']           = run_str
+                        row['check_index']      = s
+                        row['dof']              = d
+                        row['centroid']         = c
+                        row['direction_vector'] = dv
+                        row['chi2']             = chi
+                        row['p_value']          = p
+                        row['p_cutoff']         = p_cutoff
+                        row['t_min']            = tmin
+                        row['t_max']            = tmax
+                        row['status_reason']    = "OK"
+                        row.append()
             
-            for check in checks_cog:
-# 3.2: PCA FIT OF THE SELECTED PIXELS
-# we expect bodies such as satellites (our main interest) or meteorites to cross the camera FoV in a straight trajectory
-# to check this, having identified the 'affected' pixels, we aim to do a linear fit (PCA) and determine whether the selected pixels do form a straight line via a Chi^2 test 
+            t.flush()       
+            
+        except Exception as e:
+            errored_runs.append((run_str, str(e)))
 
-# to do the linear fit with the selected pixels, we'll use the PCA method so that our fit does not depend on the frame and we can
-# include the cases of completely vertical or horizontal lines
+        finally:
+            a.close()
+            b.close()
+            spath_h5.close()
 
-                # Linear fit to check that indeed the path is linear, (Engineering frame: x=-y y=-x)
-                anomalous_row = subrun_to_row[check]
-                x_pixels = camera_geom.transform_to(EngineeringCameraFrame()).pix_x[mask_3[anomalous_row]].value  # .value to remove the units in the array, 
-                y_pixels = camera_geom.transform_to(EngineeringCameraFrame()).pix_y[mask_3[anomalous_row]].value
-
-                if len(x_pixels) < 8:    #impose the selection of at least 8 pixels
-                    continue
-                
-                m_pixels = np.column_stack((x_pixels, y_pixels)) #matrix of the shape columns: pixel, rows: x_pixel, y_pixel
-
-                # Weights for the x and y (are the same for each pixel), the weight will be the normalized cog rate
-                cog_rate_anomalous = cog_rate[anomalous_row][mask_3[anomalous_row]]  
-                
-                # Fit + Elements of the linear fit to draw
-                centroid, direction_vector, minor_axis = wpca(m_pixels, cog_rate_anomalous)
-
-                # X^2 TEST TO DETERMINE IF THE PIXELS REALLY FOLLOW A STRAIGHT LINE
-
-                if np.norm(direction_vector) >= 3*np.norm(minor_axis):     
-                    # Coordinates of the pixels relative to the centroid
-                    delta = m_pixels - centroid
-                    
-                    #Distances (orthogonal) from the center of the pixels to the line of the fit
-                    distances = np.abs(delta[:, 0] * direction_vector[1] - delta[:, 1] * direction_vector[0])
-                    
-                    # Uncertainty of the points used in the fit
-                    sigma_pixel = 0.01 # 1cm
-                    
-                    # Chi-square
-                    # Chi2 Calculated
-                    chi2_data = np.sum( cog_rate_anomalous * (distances / sigma_pixel)**2 ) / np.sum(cog_rate_anomalous)
-                    dof = len(m_pixels) - 2 #  Number of degrees of freedom of the associated theoretical chi2
-
-            row["check_index"] = check
-            row["chi2"] = chi2_data
-            row["dof"] = dof
-
-            row.append()
-    
-    t.flush()
-        
-    a.close()
-    b.close()
-    chis_h5.close()
-
-print("Filter 3 could not be applied to Runs: ", disfunctional_3)
+    print("Filter 3 could not be applied to Runs: ", disfunctional_3)
+    print("Runs that raised an error and were skipped: ", errored_runs)
 
 if __name__ == '__main__':
     main()
